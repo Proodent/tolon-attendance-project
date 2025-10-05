@@ -10,9 +10,9 @@ import https from 'https';
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: 'https://tolon-attendance.proodentit.com' }));
-app.use(express.static(path.join(__dirname, '..')));
+app.use(express.static(path.join(__dirname, '../client')));
 
-const PORT = process.env.WEB_PORT || 3001;
+const PORT = process.env.WEB_PORT || 3000;
 
 const rawKey = process.env.GOOGLE_PRIVATE_KEY;
 const processedKey = rawKey
