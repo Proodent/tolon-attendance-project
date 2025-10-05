@@ -177,6 +177,11 @@ app.post('/api/proxy/face-recognition', async (req, res) => {
   }
 });
 
+app.get('/', (req, res) => {
+  res.status(200).send('✅ Tolon Attendance Server is running fine!');
+});
+
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎉 Web attendance server running on http://0.0.0.0:${PORT}`);
 });
