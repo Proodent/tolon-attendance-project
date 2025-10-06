@@ -15,10 +15,8 @@ app.use(express.static(path.join(__dirname, '../client')));
 const PORT = process.env.PORT || 3000;
 
 
-const rawKey = process.env.GOOGLE_PRIVATE_KEY;
-const processedKey = rawKey
-  .replace(/\\\\n/g, '\n')
-  .replace(/\\n/g, '\n');
+const processedKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
+
 const serviceAccountAuth = new JWT({
   email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
   key: processedKey,
