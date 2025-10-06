@@ -4,15 +4,15 @@
   "description": "Server for Tolon Attendance System",
   "main": "index.js",
   "scripts": {
-   "start": "node index.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.19.2", 
-    "google-spreadsheet": "^5.0.2", 
-    "google-auth-library": "^9.14.1", 
-    "dotenv": "^16.4.5", 
-    "cors": "^2.8.5", 
-    "node-fetch": "^3.3.2" 
+    "express": "^4.19.2",
+    "google-spreadsheet": "^5.0.2",
+    "google-auth-library": "^9.14.1",
+    "dotenv": "^16.4.5",
+    "cors": "^2.8.5",
+    "node-fetch": "^3.3.2"
   },
   "author": "Your Name",
   "license": "ISC"
