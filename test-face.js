@@ -1,7 +1,7 @@
 import fs from "fs";
 import fetch from "node-fetch";
 
-const image = fs.readFileSync("face.jpg"); // Replace with your image path
+const image = fs.readFileSync("C:/Users/amoni/Downloads/michael.jpg"); // Replace with your image path
 const base64 = `data:image/jpeg;base64,${image.toString("base64")}`;
 
 const response = await fetch("http://145.223.33.154:8081/api/v1/recognition/recognize?limit=5", {
