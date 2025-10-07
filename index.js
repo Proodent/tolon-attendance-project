@@ -18,12 +18,12 @@ const app = express();
 app.use(cors({ origin: 'https://tolon-attendance.proodentit.com' }));
 app.use(express.json());
 
-// ✅ Serve your frontend files (from root)
+// ✅ Serve frontend files
 app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 3000;
 
-// ✅ Setup Google Sheets authentication
+// ✅ Google Sheets authentication
 const processedKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
 const serviceAccountAuth = new JWT({
   email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -31,49 +31,38 @@ const serviceAccountAuth = new JWT({
   scopes: ['https://www.googleapis.com/auth/spreadsheets']
 });
 
-// ✅ Define geofence office locations
+// ✅ Office locations (geofence)
 const OFFICE_LOCATIONS = [
   { name: 'Head Office', lat: 9.429241474535132, long: -1.0533786340817441, radius: 0.15 },
   { name: 'Nyankpala', lat: 9.404691157748209, long: -0.9838639320946208, radius: 0.15 }
 ];
 
+// ✅ Distance calculation helpers
 function toRad(value) {
   return value * Math.PI / 180;
 }
 
 function getDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371;
+  const R = 6371; // Earth radius in km
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) ** 2;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
 
 function getOfficeName(lat, long) {
-  return OFFICE_LOCATIONS.find(office =>
-    getDistance(lat, long, office.lat, office.long) <= office.radius
-  )?.name || null;
+  return (
+    OFFICE_LOCATIONS.find(
+      office => getDistance(lat, long, office.lat, office.long) <= office.radius
+    )?.name || null
+  );
 }
 
-// ✅ Face descriptor stub (you can later load this dynamically)
-const faceDescriptors = {
-  'user1': [0.1, 0.2, 0.3],
-  'user2': [0.4, 0.5, 0.6]
-};
-
-app.post('/api/attendance/getFaceDescriptor', (req, res) => {
-  const { username } = req.body;
-  if (faceDescriptors[username]) {
-    res.json({ success: true, descriptor: faceDescriptors[username] });
-  } else {
-    res.json({ success: false, message: 'No face data for this user' });
-  }
-});
-
-// ✅ Attendance handler
+// ✅ Attendance API
 app.post('/api/attendance/web', async (req, res) => {
   const { action, latitude, longitude, timestamp, subjectId } = req.body;
   console.log(`📥 Attendance request: ${action} | ${subjectId} | ${latitude}, ${longitude}`);
@@ -83,16 +72,20 @@ app.post('/api/attendance/web', async (req, res) => {
   }
 
   try {
+    // ✅ Load staff data
     const staffDoc = new GoogleSpreadsheet(process.env.STAFF_SHEET_ID, serviceAccountAuth);
     await staffDoc.loadInfo();
     const staffSheet = staffDoc.sheetsByTitle['Staff Sheet'];
     const staffRows = await staffSheet.getRows();
-    const staffMember = staffRows.find(row => row.get('Name') === subjectId && row.get('Active') === 'Yes');
+    const staffMember = staffRows.find(
+      row => row.get('Name') === subjectId && row.get('Active') === 'Yes'
+    );
 
     if (!staffMember) {
       return res.status(403).json({ success: false, message: 'Staff member not found or not active.' });
     }
 
+    // ✅ Check location access
     const allowedLocations = staffMember.get('Allowed Locations')?.split(',').map(loc => loc.trim()) || [];
     const officeName = getOfficeName(latitude, longitude);
 
@@ -102,20 +95,26 @@ app.post('/api/attendance/web', async (req, res) => {
 
     const department = staffMember.get('Department') || 'Unknown';
 
+    // ✅ Load attendance sheet
     const attendanceDoc = new GoogleSpreadsheet(process.env.ATTENDANCE_SHEET_ID, serviceAccountAuth);
     await attendanceDoc.loadInfo();
     const attendanceSheet = attendanceDoc.sheetsByTitle['Attendance Sheet'];
+
     const dateStr = new Date(timestamp).toISOString().split('T')[0];
     const rows = await attendanceSheet.getRows();
-    const userRow = rows.find(row => row.get('Time In')?.startsWith(dateStr) && row.get('Name') === subjectId);
+    const userRow = rows.find(
+      row => row.get('Time In')?.startsWith(dateStr) && row.get('Name') === subjectId
+    );
 
     if (action === 'clock in' && userRow && userRow.get('Time In')) {
       return res.json({ success: false, message: 'You have already clocked in today.' });
     }
+
     if (action === 'clock out' && (!userRow || !userRow.get('Time In') || userRow.get('Time Out'))) {
       return res.json({ success: false, message: 'No clock-in found for today or already clocked out.' });
     }
 
+    // ✅ Save clock-in or clock-out
     if (action === 'clock in') {
       await attendanceSheet.addRow({
         Name: subjectId,
@@ -141,7 +140,7 @@ app.post('/api/attendance/web', async (req, res) => {
   }
 });
 
-// ✅ Proxy to CompreFace
+// ✅ Proxy to CompreFace (face recognition)
 app.post('/api/proxy/face-recognition', async (req, res) => {
   const apiKey = '4f4766d9-fc3b-436a-b24e-f57851a1c865';
   const url = 'http://145.223.33.154:8081/api/v1/recognition/recognize?limit=5';
@@ -166,7 +165,7 @@ app.post('/api/proxy/face-recognition', async (req, res) => {
   }
 });
 
-// ✅ Serve index.html for all unmatched routes (important for frontend routing)
+// ✅ Serve index.html for frontend routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
