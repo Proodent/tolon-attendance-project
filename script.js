@@ -196,7 +196,8 @@ async function startLocationWatch() {
         const latitude = parseFloat(latStr);
         const longitude = parseFloat(lonStr);
         try {
-          const response = await fetch('http://localhost:3001/api/attendance/web', {
+          const response = await fetch('/api/attendance/web', {
+
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
