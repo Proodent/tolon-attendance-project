@@ -14,17 +14,31 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// ✅ Allow frontend access
-app.use(cors({ origin: 'https://tolon-attendance.proodentit.com' }));
+// ✅ Allow local + production frontend
+const allowedOrigins = [
+  'https://tolon-attendance.proodentit.com',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000'
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  }
+}));
+
 app.use(express.json());
 
-// ✅ Serve frontend files
-app.use(express.static(__dirname));
+// ✅ Serve frontend files (recommended: move HTML/CSS/JS into a /public folder)
+app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 
 // ✅ Google Sheets authentication
-const processedKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
+if (!process.env.GOOGLE_PRIVATE_KEY || !process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+  console.error('⚠️ Missing Google credentials in .env file.');
+}
+const processedKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 const serviceAccountAuth = new JWT({
   email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
   key: processedKey,
@@ -37,29 +51,23 @@ const OFFICE_LOCATIONS = [
   { name: 'Nyankpala', lat: 9.404691157748209, long: -0.9838639320946208, radius: 0.15 }
 ];
 
-// ✅ Distance calculation helpers
 function toRad(value) {
   return value * Math.PI / 180;
 }
-
 function getDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Earth radius in km
+  const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) ** 2;
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-
 function getOfficeName(lat, long) {
-  return (
-    OFFICE_LOCATIONS.find(
-      office => getDistance(lat, long, office.lat, office.long) <= office.radius
-    )?.name || null
-  );
+  return OFFICE_LOCATIONS.find(
+    office => getDistance(lat, long, office.lat, office.long) <= office.radius
+  )?.name || null;
 }
 
 // ✅ Attendance API
@@ -82,20 +90,16 @@ app.post('/api/attendance/web', async (req, res) => {
     );
 
     if (!staffMember) {
-      return res.status(403).json({ success: false, message: 'Staff member not found or not active.' });
+      return res.status(403).json({ success: false, message: 'Staff member not found or inactive.' });
     }
 
-    // ✅ Check location access
-    const allowedLocations = staffMember.get('Allowed Locations')?.split(',').map(loc => loc.trim()) || [];
+    const allowedLocations = staffMember.get('Allowed Locations')?.split(',').map(l => l.trim()) || [];
     const officeName = getOfficeName(latitude, longitude);
-
     if (!officeName || !allowedLocations.includes(officeName)) {
-      return res.status(403).json({ success: false, message: `Not authorized to clock ${action} at ${officeName}.` });
+      return res.status(403).json({ success: false, message: `Not authorized to clock ${action} at ${officeName || 'this location'}.` });
     }
 
     const department = staffMember.get('Department') || 'Unknown';
-
-    // ✅ Load attendance sheet
     const attendanceDoc = new GoogleSpreadsheet(process.env.ATTENDANCE_SHEET_ID, serviceAccountAuth);
     await attendanceDoc.loadInfo();
     const attendanceSheet = attendanceDoc.sheetsByTitle['Attendance Sheet'];
@@ -109,12 +113,10 @@ app.post('/api/attendance/web', async (req, res) => {
     if (action === 'clock in' && userRow && userRow.get('Time In')) {
       return res.json({ success: false, message: 'You have already clocked in today.' });
     }
-
     if (action === 'clock out' && (!userRow || !userRow.get('Time In') || userRow.get('Time Out'))) {
       return res.json({ success: false, message: 'No clock-in found for today or already clocked out.' });
     }
 
-    // ✅ Save clock-in or clock-out
     if (action === 'clock in') {
       await attendanceSheet.addRow({
         Name: subjectId,
@@ -127,36 +129,27 @@ app.post('/api/attendance/web', async (req, res) => {
       return res.json({ success: true, message: `Clocked in successfully at ${officeName}!` });
     } else if (action === 'clock out' && userRow) {
       userRow.set('Time Out', timestamp);
-      userRow.set('Location', officeName);
-      userRow.set('Department', department);
       await userRow.save();
       console.log(`✅ Clock-out recorded for ${subjectId} at ${officeName}`);
       return res.json({ success: true, message: `Clocked out successfully at ${officeName}!` });
     }
 
   } catch (error) {
-    console.error('❌ Attendance error:', error.message);
+    console.error('❌ Attendance error:', error);
     return res.status(500).json({ success: false, message: `Server error: ${error.message}` });
   }
 });
 
-// ✅ Proxy to CompreFace (face recognition)
+// ✅ CompreFace Proxy
 app.post('/api/proxy/face-recognition', async (req, res) => {
   const apiKey = '4f4766d9-fc3b-436a-b24e-f57851a1c865';
   const url = 'http://145.223.33.154:8081/api/v1/recognition/recognize?limit=5';
-
   try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(req.body),
-      agent: url.startsWith('http:') ? agent : undefined
+      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body)
     });
-
     const result = await response.json();
     res.json(result);
   } catch (error) {
@@ -165,9 +158,9 @@ app.post('/api/proxy/face-recognition', async (req, res) => {
   }
 });
 
-// ✅ Serve index.html for frontend routes
+// ✅ Fallback route
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ✅ Start server
