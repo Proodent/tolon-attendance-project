@@ -1,261 +1,121 @@
-// Office locations
-const OFFICE_LOCATIONS = [
-  { name: 'Head Office', lat: 9.429241474535132, long: -1.0533786340817441, radius: 0.15 },
-  { name: 'Nyankpala', lat: 9.404691157748209, long: -0.9838639320946208, radius: 0.15 },
-  { name: 'Accra office', lat: 5.790586353761225, long: -0.15862287743592557, radius: 0.15 }
-];
+// script.js
+const video = document.getElementById('camera');
+const messageBox = document.getElementById('message');
+const clockInBtn = document.getElementById('clockIn');
+const clockOutBtn = document.getElementById('clockOut');
 
-function getDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
+const backendURL = 'https://tolon-attendance.proodentit.com/api'; // adjust if needed
 
-function toRad(value) {
-  return value * Math.PI / 180;
-}
-
-function getOfficeName(lat, long) {
-  return OFFICE_LOCATIONS.find(office =>
-    getDistance(lat, long, office.lat, office.long) <= office.radius
-  )?.name || null;
-}
-
-let watchId = null;
-let video, canvas, popup, popupHeader, popupMessage, popupFooter, popupRetry, diagnostic;
-
-async function startLocationWatch() {
-  const status = document.getElementById('status');
-  const location = document.getElementById('location');
-  const clockIn = document.getElementById('clockIn');
-  const clockOut = document.getElementById('clockOut');
-  video = document.getElementById('video');
-  canvas = document.getElementById('canvas');
-  const faceMessage = document.getElementById('faceMessage');
-  const faceRecognition = document.getElementById('faceRecognition');
-  const message = document.getElementById('message');
-  popup = document.getElementById('popup');
-  popupHeader = document.getElementById('popupHeader');
-  popupMessage = document.getElementById('popupMessage');
-  popupFooter = document.getElementById('popupFooter');
-  popupRetry = document.getElementById('popupRetry');
-  diagnostic = document.getElementById('diagnostic');
-
-  if (navigator.geolocation) {
-    watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords;
-        location.textContent = `Location: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
-        const office = getOfficeName(latitude, longitude);
-        status.textContent = office ? `At ${office}` : 'Outside office area';
-        const isAtOffice = !!office;
-        clockIn.disabled = !isAtOffice;
-        clockOut.disabled = !isAtOffice;
-        clockIn.style.opacity = isAtOffice ? '1' : '0.6';
-        clockOut.style.opacity = isAtOffice ? '1' : '0.6';
-      },
-      (error) => {
-        status.textContent = `Error: ${error.message}`;
-        clockIn.disabled = true;
-        clockOut.disabled = true;
-        clockIn.style.opacity = '0.6';
-        clockOut.style.opacity = '0.6';
-      },
-      { enableHighAccuracy: true, maximumAge: 10000 }
-    );
-  } else {
-    status.textContent = 'Geolocation not supported';
-    clockIn.disabled = true;
-    clockOut.disabled = true;
-    clockIn.style.opacity = '0.6';
-    clockOut.style.opacity = '0.6';
+// 🎥 Start the webcam
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+  } catch (err) {
+    showMessage('Unable to access camera: ' + err.message, 'error');
   }
+}
 
-  async function startVideo() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-      video.srcObject = stream;
-      video.play();
-      video.style.transform = 'scaleX(-1)';
-      faceMessage.textContent = 'Please face the camera...';
-    } catch (err) {
-      console.error('Camera/video error:', err);
-      faceMessage.textContent = 'Camera error. Try again.';
-      popupHeader.textContent = 'Verification Unsuccessful';
-      popupMessage.textContent = `Camera error. Try again. Details: ${err.name} - ${err.message}.`;
-      popupFooter.textContent = `${new Date().toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}`;
-      popupRetry.innerHTML = '<button onclick="retryCamera()">Retry Camera</button>';
-      popup.style.display = 'block';
-      clockIn.disabled = false;
-      clockOut.disabled = false;
-      faceRecognition.style.display = 'none';
-      if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop());
+// 🖼️ Capture an image from the camera
+function captureImage() {
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg').split(',')[1]; // Base64 image string
+}
+
+// 🌍 Get user location (latitude, longitude)
+function getLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Geolocation not supported'));
+    } else {
+      navigator.geolocation.getCurrentPosition(
+        pos => resolve({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude
+        }),
+        err => reject(err)
+      );
     }
-  }
-
-  window.retryCamera = async () => {
-    popup.style.display = 'none';
-    faceRecognition.style.display = 'block';
-    await startVideo();
-  };
-
-  async function validateFace(imageData) {
-    const apiKey = '4f4766d9-fc3b-436a-b24e-f57851a1c865';
-    const url = '/api/proxy/face-recognition';
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ image: imageData }),
-        mode: 'cors',
-        credentials: 'omit'
-      });
-      const result = await response.json();
-      console.log('Proxy API Response:', {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: result
-      });
-      if (result.result && result.result.length > 0) {
-        if (result.result[0].similarity > 0.6) {
-          return result.result[0].subject;
-        } else {
-          console.log('Low similarity:', result.result[0].similarity);
-          return { error: 'Low similarity detected' };
-        }
-      }
-      return { error: 'No matching face found' };
-    } catch (error) {
-      console.error('Face recognition proxy error:', {
-        message: error.message,
-        name: error.name,
-        stack: error.stack,
-        url: url,
-        apiKeyIncluded: !!apiKey,
-        fetchOptions: {
-          method: 'POST',
-          headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
-          mode: 'cors',
-          credentials: 'omit'
-        }
-      });
-      return { error: `API error: Failed to fetch - ${error.message}` };
-    }
-  }
-
-  async function captureAndCompare() {
-    const canvas = document.createElement('canvas');
-    canvas.width = 640;
-    canvas.height = 480;
-    const context = canvas.getContext('2d');
-    context.scale(-1, 1);
-    context.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
-    const imageData = canvas.toDataURL('image/jpeg').split(',')[1];
-    const result = await validateFace(imageData);
-    return typeof result === 'string' ? { success: true, name: result } : { success: false, error: result.error };
-  }
-
-  async function handleClock(action) {
-    const status = document.getElementById('status');
-    const location = document.getElementById('location');
-    const clockIn = document.getElementById('clockIn');
-    const clockOut = document.getElementById('clockOut');
-    const message = document.getElementById('message');
-    const faceRecognition = document.getElementById('faceRecognition');
-
-    const [latStr, lonStr] = location.textContent.replace('Location: ', '').split(', ');
-    const latitude = parseFloat(latStr);
-    const longitude = parseFloat(lonStr);
-    if (isNaN(latitude) || isNaN(longitude)) {
-      message.textContent = 'Location not loaded yet. Try again!';
-      message.className = 'error';
-      return;
-    }
-    status.textContent = `Processing ${action}...`;
-    clockIn.disabled = true;
-    clockOut.disabled = true;
-    faceRecognition.style.display = 'block';
-    await startVideo();
-
-    setTimeout(async () => {
-      const faceMessage = document.getElementById('faceMessage');
-      if (faceMessage.textContent === 'Camera error. Try again.') return;
-      const result = await captureAndCompare();
-      if (result.success && result.name) {
-        faceRecognition.style.display = 'none';
-        const [latStr, lonStr] = location.textContent.replace('Location: ', '').split(', ');
-        const latitude = parseFloat(latStr);
-        const longitude = parseFloat(lonStr);
-        try {
-          const response = await fetch('/api/attendance/web', {
-
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action,
-              latitude,
-              longitude,
-              timestamp: new Date().toISOString(),
-              subjectId: result.name
-            })
-          });
-          const data = await response.json();
-          if (data.success) {
-            popupHeader.textContent = 'Verification Successful';
-            popupMessage.textContent = `Thank you ${result.name}, you have ${action} successfully at ${new Date().toLocaleTimeString()}`;
-            popupFooter.textContent = `${new Date().toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}`;
-            popup.style.display = 'block';
-          } else {
-            popupHeader.textContent = 'Verification Unsuccessful';
-            popupMessage.textContent = data.message || 'Failed to log attendance. Please try again!';
-            popupFooter.textContent = `${new Date().toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}`;
-            popupRetry.innerHTML = '<button onclick="retryAttendance()">Retry</button>';
-            popup.style.display = 'block';
-          }
-        } catch (error) {
-          popupHeader.textContent = 'Verification Unsuccessful';
-          popupMessage.textContent = `Server error: ${error.message}. Please try again!`;
-          popupFooter.textContent = `${new Date().toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}`;
-          popupRetry.innerHTML = '<button onclick="retryAttendance()">Retry</button>';
-          popup.style.display = 'block';
-        }
-      } else {
-        faceRecognition.style.display = 'none';
-        popupHeader.textContent = 'Verification Unsuccessful';
-        popupMessage.textContent = result.error || 'Facial recognition failed. Please try again!';
-        popupFooter.textContent = `${new Date().toLocaleDateString('en-US', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}`;
-        popupRetry.innerHTML = '<button onclick="retryAttendance()">Retry</button>';
-        popup.style.display = 'block';
-      }
-      setTimeout(() => {
-        popup.style.display = 'none';
-        clockIn.disabled = false;
-        clockOut.disabled = false;
-      }, 5000);
-    }, 3000);
-  }
-
-  window.retryAttendance = () => {
-    popup.style.display = 'none';
-    handleClock(popupMessage.textContent.includes('clock in') ? 'clock in' : 'clock out');
-  };
-
-  document.getElementById('clockIn').addEventListener('click', () => handleClock('clock in'));
-  document.getElementById('clockOut').addEventListener('click', () => handleClock('clock out'));
+  });
 }
 
-window.onload = startLocationWatch;
+// 🧠 Recognize face via backend
+async function recognizeFace(imageBase64) {
+  try {
+    const response = await fetch(`${backendURL}/recognize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64 })
+    });
+    const data = await response.json();
+    if (data.success) {
+      return data.subjectId; // recognized user name
+    } else {
+      throw new Error(data.message || 'Face not recognized');
+    }
+  } catch (err) {
+    throw new Error('Recognition failed: ' + err.message);
+  }
+}
 
-window.onunload = () => {
-  if (watchId) navigator.geolocation.clearWatch(watchId);
-  if (video && video.srcObject) video.srcObject.getTracks().forEach(track => track.stop());
-};
+// 🕒 Log attendance (clock in/out)
+async function logAttendance(action, subjectId, latitude, longitude) {
+  try {
+    const timestamp = new Date().toISOString();
+    const response = await fetch(`${backendURL}/attendance/web`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, subjectId, latitude, longitude, timestamp })
+    });
+
+    const data = await response.json();
+    if (data.success) {
+      showMessage(data.message, 'success');
+    } else {
+      showMessage(data.message, 'error');
+    }
+  } catch (err) {
+    showMessage('Attendance error: ' + err.message, 'error');
+  }
+}
+
+// 💬 Helper to show messages
+function showMessage(text, type = 'info') {
+  messageBox.textContent = text;
+  messageBox.className = type;
+}
+
+// 🚀 Main function for clocking in/out
+async function handleAttendance(action) {
+  showMessage(`Processing ${action}...`, 'info');
+
+  try {
+    // Capture image
+    const imageBase64 = captureImage();
+    showMessage('Verifying face...', 'info');
+
+    // Face recognition
+    const subjectId = await recognizeFace(imageBase64);
+    showMessage(`Welcome, ${subjectId}. Checking location...`, 'info');
+
+    // Get location
+    const { latitude, longitude } = await getLocation();
+
+    // Send attendance
+    await logAttendance(action, subjectId, latitude, longitude);
+
+  } catch (err) {
+    showMessage(err.message, 'error');
+  }
+}
+
+// 🎯 Attach event listeners
+clockInBtn.addEventListener('click', () => handleAttendance('clock in'));
+clockOutBtn.addEventListener('click', () => handleAttendance('clock out'));
+
+// 🎥 Start camera on load
+startCamera();
