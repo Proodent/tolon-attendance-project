@@ -1,53 +1,42 @@
-// ✅ ===== TOLON ATTENDANCE SERVER =====
-// Author: Proodent IT Solutions
-// Description: Attendance tracking system with Google Sheets integration
-// Deployment: Coolify (Nixpacks)
-// =====================================
-
-// ---- Imports ----
+// index.js
 import express from 'express';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import 'dotenv/config';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import https from 'https';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// ---- Setup ----
-dotenv.config();
-
-// Support for __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize Express
 const app = express();
-app.use(express.json());
+
+// ✅ Allow frontend access
 app.use(cors({ origin: 'https://tolon-attendance.proodentit.com' }));
-app.use(express.static(path.join(__dirname, '../client')));
+app.use(express.json());
 
-// ---- Port Configuration ----
+// ✅ Serve your frontend files (from root)
+app.use(express.static(__dirname));
+
 const PORT = process.env.PORT || 3000;
-console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
 
-// ---- Google Service Account Auth ----
-const processedKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
-
+// ✅ Setup Google Sheets authentication
+const processedKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
 const serviceAccountAuth = new JWT({
   email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
   key: processedKey,
   scopes: ['https://www.googleapis.com/auth/spreadsheets']
 });
 
-// ---- Office Locations ----
+// ✅ Define geofence office locations
 const OFFICE_LOCATIONS = [
   { name: 'Head Office', lat: 9.429241474535132, long: -1.0533786340817441, radius: 0.15 },
   { name: 'Nyankpala', lat: 9.404691157748209, long: -0.9838639320946208, radius: 0.15 }
 ];
 
-// ---- Utility Functions ----
 function toRad(value) {
   return value * Math.PI / 180;
 }
@@ -56,9 +45,9 @@ function getDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+  const a = Math.sin(dLat / 2) ** 2 +
             Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
@@ -69,7 +58,7 @@ function getOfficeName(lat, long) {
   )?.name || null;
 }
 
-// ---- Face Descriptor Endpoint ----
+// ✅ Face descriptor stub (you can later load this dynamically)
 const faceDescriptors = {
   'user1': [0.1, 0.2, 0.3],
   'user2': [0.4, 0.5, 0.6]
@@ -84,10 +73,10 @@ app.post('/api/attendance/getFaceDescriptor', (req, res) => {
   }
 });
 
-// ---- Web Attendance Endpoint ----
+// ✅ Attendance handler
 app.post('/api/attendance/web', async (req, res) => {
   const { action, latitude, longitude, timestamp, subjectId } = req.body;
-  console.log(`📥 Web attendance request: ${action} at ${latitude}, ${longitude}, subjectId: ${subjectId}`);
+  console.log(`📥 Attendance request: ${action} | ${subjectId} | ${latitude}, ${longitude}`);
 
   if (!action || isNaN(latitude) || isNaN(longitude) || !subjectId) {
     return res.status(400).json({ success: false, message: 'Invalid input. Please try again!' });
@@ -135,30 +124,27 @@ app.post('/api/attendance/web', async (req, res) => {
         Location: officeName,
         Department: department
       });
-      console.log(`✅ Clocked in: ${subjectId} (${department})`);
-      return res.json({ success: true, message: `Clocked in successfully at ${timestamp} at ${officeName}!` });
-    }
-
-    if (action === 'clock out' && userRow) {
+      console.log(`✅ Clock-in recorded for ${subjectId} at ${officeName}`);
+      return res.json({ success: true, message: `Clocked in successfully at ${officeName}!` });
+    } else if (action === 'clock out' && userRow) {
       userRow.set('Time Out', timestamp);
       userRow.set('Location', officeName);
       userRow.set('Department', department);
       await userRow.save();
-      console.log(`✅ Clocked out: ${subjectId} (${department})`);
-      return res.json({ success: true, message: `Clocked out successfully at ${timestamp} at ${officeName}!` });
+      console.log(`✅ Clock-out recorded for ${subjectId} at ${officeName}`);
+      return res.json({ success: true, message: `Clocked out successfully at ${officeName}!` });
     }
 
   } catch (error) {
-    console.error('❌ Web attendance error:', error.message);
-    return res.status(500).json({ success: false, message: `Server error: ${error.message}. Please try again or contact admin!` });
+    console.error('❌ Attendance error:', error.message);
+    return res.status(500).json({ success: false, message: `Server error: ${error.message}` });
   }
 });
 
-// ---- Face Recognition Proxy ----
+// ✅ Proxy to CompreFace
 app.post('/api/proxy/face-recognition', async (req, res) => {
   const apiKey = '4f4766d9-fc3b-436a-b24e-f57851a1c865';
   const url = 'http://145.223.33.154:8081/api/v1/recognition/recognize?limit=5';
-  console.log('Proxy request received:', req.body);
 
   try {
     const agent = new https.Agent({ rejectUnauthorized: false });
@@ -173,30 +159,19 @@ app.post('/api/proxy/face-recognition', async (req, res) => {
     });
 
     const result = await response.json();
-    console.log('Proxy response:', {
-      status: response.status,
-      statusText: response.statusText
-    });
     res.json(result);
-
   } catch (error) {
-    console.error('❌ Proxy fetch error:', error.message);
+    console.error('Proxy error:', error.message);
     res.status(500).json({ error: `Proxy error: ${error.message}` });
   }
 });
 
-// ---- Health Check ----
-app.get('/', (req, res) => {
-  res.status(200).send('✅ Tolon Attendance Server is running fine!');
+// ✅ Serve index.html for all unmatched routes (important for frontend routing)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// ---- Graceful Shutdown ----
-process.on('SIGTERM', () => {
-  console.log('🛑 Server shutting down gracefully...');
-  process.exit(0);
-});
-
-// ---- Start Server ----
+// ✅ Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🎉 Web attendance server running on http://0.0.0.0:${PORT}`);
+  console.log(`🎉 Tolon Attendance Server running on http://0.0.0.0:${PORT}`);
 });
