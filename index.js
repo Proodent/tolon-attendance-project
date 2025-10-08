@@ -5,7 +5,6 @@ import { JWT } from 'google-auth-library';
 import 'dotenv/config';
 import cors from 'cors';
 import fetch from 'node-fetch';
-import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,11 +12,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(cors({ origin: '*' })); // ✅ Allow all origins for now
-app.use(express.json());
-app.use(express.static(__dirname));
-
 const PORT = process.env.PORT || 3000;
+
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ✅ Google Sheets authentication
 const processedKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
@@ -26,12 +25,6 @@ const serviceAccountAuth = new JWT({
   key: processedKey,
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
-
-// ✅ Office locations (geofence)
-const OFFICE_LOCATIONS = [
-  { name: 'Head Office', lat: 9.429241474535132, long: -1.0533786340817441, radius: 0.15 },
-  { name: 'Nyankpala', lat: 9.404691157748209, long: -0.9838639320946208, radius: 0.15 },
-];
 
 // ✅ Utility functions
 function toRad(value) {
@@ -50,9 +43,24 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-function getOfficeName(lat, long) {
+async function loadOfficeLocations() {
+  const doc = new GoogleSpreadsheet(process.env.STAFF_SHEET_ID);
+  await doc.useServiceAccountAuth(serviceAccountAuth);
+  await doc.loadInfo();
+  const locationSheet = doc.sheetsByTitle['Locations'];
+  const rows = await locationSheet.getRows();
+
+  return rows.map(row => ({
+    name: row.get('Location Name'),
+    lat: parseFloat(row.get('Latitude')),
+    long: parseFloat(row.get('Longitude')),
+    radius: parseFloat(row.get('Radius (km)')) || 0.15,
+  }));
+}
+
+function getOfficeName(lat, long, officeLocations) {
   return (
-    OFFICE_LOCATIONS.find(
+    officeLocations.find(
       office => getDistance(lat, long, office.lat, office.long) <= office.radius
     )?.name || null
   );
@@ -68,13 +76,16 @@ app.post('/api/attendance/web', async (req, res) => {
   }
 
   try {
-    // ✅ Load staff data
-    const staffDoc = new GoogleSpreadsheet(process.env.STAFF_SHEET_ID, serviceAccountAuth);
+    // ✅ Load office locations from sheet
+    const officeLocations = await loadOfficeLocations();
+
+    // ✅ Load staff sheet
+    const staffDoc = new GoogleSpreadsheet(process.env.STAFF_SHEET_ID);
+    await staffDoc.useServiceAccountAuth(serviceAccountAuth);
     await staffDoc.loadInfo();
     const staffSheet = staffDoc.sheetsByTitle['Staff Sheet'];
     const staffRows = await staffSheet.getRows();
 
-    // Match by either Name or ID
     const staffMember = staffRows.find(
       row => (row.get('Name') === subjectId || row.get('User ID') === subjectId) && row.get('Active') === 'Yes'
     );
@@ -84,54 +95,75 @@ app.post('/api/attendance/web', async (req, res) => {
     }
 
     const name = staffMember.get('Name');
+    const userId = staffMember.get('User ID');
     const department = staffMember.get('Department') || 'Unknown';
     const allowedLocations = staffMember.get('Allowed Locations')?.split(',').map(l => l.trim()) || [];
-    const officeName = getOfficeName(latitude, longitude);
+
+    const officeName = getOfficeName(latitude, longitude, officeLocations);
 
     if (!officeName || !allowedLocations.includes(officeName)) {
-      return res.status(403).json({ success: false, message: `Not authorized to clock ${action} at ${officeName || 'this location'}.` });
+      return res.status(403).json({
+        success: false,
+        message: `Not authorized to clock ${action} at ${officeName || 'this location'}.`
+      });
     }
 
-    // ✅ Attendance sheet
-    const attendanceDoc = new GoogleSpreadsheet(process.env.ATTENDANCE_SHEET_ID, serviceAccountAuth);
+    // ✅ Load attendance sheet
+    const attendanceDoc = new GoogleSpreadsheet(process.env.ATTENDANCE_SHEET_ID);
+    await attendanceDoc.useServiceAccountAuth(serviceAccountAuth);
     await attendanceDoc.loadInfo();
     const attendanceSheet = attendanceDoc.sheetsByTitle['Attendance Sheet'];
     const rows = await attendanceSheet.getRows();
 
     const dateStr = new Date(timestamp).toISOString().split('T')[0];
     const existingRow = rows.find(
-      row => row.get('Time In')?.startsWith(dateStr) && row.get('Name') === name
+      row => row.get('Date') === dateStr && row.get('User ID') === userId
     );
 
-    if (action === 'clock in' && existingRow && existingRow.get('Time In')) {
-      return res.json({ success: false, message: `Dear ${name}, you have already clocked in today.` });
-    }
+    const timeFormatted = new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    if (action === 'clock out' && (!existingRow || !existingRow.get('Time In') || existingRow.get('Time Out'))) {
-      return res.json({ success: false, message: `Dear ${name}, you haven't clocked in yet or already clocked out.` });
-    }
-
-    // ✅ Save record
     if (action === 'clock in') {
+      if (existingRow && existingRow.get('Time In')) {
+        return res.json({ success: false, message: `Dear ${name}, you have already clocked in today.` });
+      }
+
       await attendanceSheet.addRow({
-        'User ID': staffMember.get('User ID'),
+        'User ID': userId,
         Name: name,
+        Date: dateStr,
         'Time In': timestamp,
         'Time Out': '',
         Location: officeName,
         Department: department,
       });
+
       console.log(`✅ ${name} clocked in at ${officeName}`);
-      return res.json({ success: true, message: `Dear ${name}, you have successfully clocked in at ${new Date(timestamp).toLocaleTimeString()} at ${officeName}.` });
+      return res.json({
+        success: true,
+        message: `Dear ${name}, you have successfully clocked in at ${timeFormatted} at ${officeName}.`
+      });
     }
 
     if (action === 'clock out') {
+      if (!existingRow || !existingRow.get('Time In')) {
+        return res.json({ success: false, message: `Dear ${name}, you haven't clocked in yet.` });
+      }
+      if (existingRow.get('Time Out')) {
+        return res.json({ success: false, message: `Dear ${name}, you have already clocked out today.` });
+      }
+
       existingRow.set('Time Out', timestamp);
       existingRow.set('Location', officeName);
       await existingRow.save();
+
       console.log(`✅ ${name} clocked out at ${officeName}`);
-      return res.json({ success: true, message: `Dear ${name}, you have successfully clocked out at ${new Date(timestamp).toLocaleTimeString()} at ${officeName}.` });
+      return res.json({
+        success: true,
+        message: `Dear ${name}, you have successfully clocked out at ${timeFormatted} at ${officeName}.`
+      });
     }
+
+    res.status(400).json({ success: false, message: 'Invalid action.' });
 
   } catch (error) {
     console.error('❌ Attendance error:', error.message);
@@ -141,11 +173,11 @@ app.post('/api/attendance/web', async (req, res) => {
 
 // ✅ Proxy for CompreFace
 app.post('/api/proxy/face-recognition', async (req, res) => {
-  const apiKey = '4f4766d9-fc3b-436a-b24e-f57851a1c865';
-  const url = 'http://145.223.33.154:8081/api/v1/recognition/recognize?limit=5';
+  const apiKey = process.env.COMPREFACE_API_KEY;
+  const baseUrl = process.env.COMPREFACE_URL;
 
   try {
-    const response = await fetch(url, {
+    const response = await fetch(`${baseUrl}/api/v1/recognition/recognize?limit=5`, {
       method: 'POST',
       headers: {
         'x-api-key': apiKey,
@@ -163,9 +195,10 @@ app.post('/api/proxy/face-recognition', async (req, res) => {
 
 // ✅ Fallback to frontend
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// ✅ Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎉 Tolon Attendance Server running on port ${PORT}`);
 });
